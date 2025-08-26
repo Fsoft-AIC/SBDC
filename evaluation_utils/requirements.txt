@@ -1,0 +1,10 @@
+tensorflow==2.14.0
+tensorflow_datasets==3.1.0
+numpy==1.26.4
+scipy
+requests
+tqdm
+prdc
+tfds-nightly
+ml-collections
+torchmetrics

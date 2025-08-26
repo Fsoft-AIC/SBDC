@@ -1,0 +1,24 @@
+name: edm
+channels:
+  - pytorch
+  - nvidia
+dependencies:
+  - python>=3.9, < 3.10  # package build failures on 3.10
+  - pip
+  - numpy=1.26.4
+  - click>=8.0
+  - pillow>=8.3.1
+  - scipy>=1.7.1
+  - pytorch=2.3.1
+  - opencv-python=4.5.4.58
+  - blobfile
+  - psutil
+  - ftfy
+  - wandb
+  - requests
+  - tqdm
+  - imageio
+  - datasets
+  - pip:
+    - imageio-ffmpeg>=0.4.3
+    - pyspng

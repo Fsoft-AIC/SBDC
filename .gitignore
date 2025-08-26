@@ -1,0 +1,14 @@
+evaluation_utils/results
+data_utils/downloads
+data_utils/datasets
+data_utils/fid-refs
+training-runs/*
+**/__pycache__/
+**/makefile
+**/classify_image_graph_def.pb
+fid-tmp*
+tdsm/
+wandb/*
+classifier-runs/*
+discriminator-runs/*
+out/
