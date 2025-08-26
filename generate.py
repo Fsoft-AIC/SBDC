@@ -40,11 +40,7 @@ def edm_sampler(
                 sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
     t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])])  # t_N = 0
 
-    pred_x0_path = []
     # Main sampling loop.
-    prev_different = 1.
-    prev_xstart = 0.
-    resamples = torch.zeros(latents.shape[0], dtype=torch.bool, device=latents.device)
     x_next = latents.to(torch.float64) * t_steps[0]
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
         x_cur = x_next
@@ -53,7 +49,6 @@ def edm_sampler(
         gamma = min(S_churn / num_steps, np.sqrt(2) - 1) if S_min <= t_cur <= S_max else 0
         t_hat = net.round_sigma(t_cur + gamma * t_cur)
         x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * randn_like(x_cur)
-        current_denoised = []
         # Euler step.
         denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
         d_cur = (x_hat - denoised) / t_hat
@@ -68,7 +63,6 @@ def edm_sampler(
             d_cur += dg_weight_1st_order * (discriminator_guidance / t_hat) 
             denoised -= dg_weight_1st_order * discriminator_guidance
         x_next = x_hat + (t_next - t_hat) * d_cur
-        current_denoised.append(denoised.detach().cpu().numpy())
 
         # Apply 2nd order correction.
         if i < num_steps - 1:
@@ -82,11 +76,8 @@ def edm_sampler(
                 d_prime += dg_weight_2nd_order * (discriminator_guidance / t_next)
                 denoised -= dg_weight_2nd_order * discriminator_guidance
             x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
-            current_denoised.append(denoised.detach().cpu().numpy())
-        
-        pred_x0_path.append(np.stack(current_denoised, axis=1))
-    return x_next, np.hstack(pred_x0_path)
-    # return x_next
+
+    return x_next
 
 def ablation_sampler(
     net, latents, class_labels=None, randn_like=torch.randn_like,
@@ -142,7 +133,6 @@ def ablation_sampler(
     t_steps = torch.cat([t_steps, torch.zeros_like(t_steps[:1])]) # t_N = 0
 
     # Main sampling loop.
-    pred_x0_path = []
     t_next = t_steps[0]
     x_next = latents.to(torch.float64) * (sigma(t_next) * s(t_next))
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
@@ -153,7 +143,6 @@ def ablation_sampler(
         t_hat = sigma_inv(net.round_sigma(sigma(t_cur) + gamma * sigma(t_cur))) # sigma^(-1)(t)
         x_hat = s(t_hat) / s(t_cur) * x_cur + (sigma(t_hat) ** 2 - sigma(t_cur) ** 2).clip(min=0).sqrt() * s(t_hat) * S_noise * randn_like(x_cur)
 
-        current_denoised = []
         # Euler step.
         h = t_next - t_hat
         denoised = net(x_hat / s(t_hat), sigma(t_hat), class_labels).to(torch.float64)
@@ -168,7 +157,6 @@ def ablation_sampler(
             #         discriminator_guidance[log_ratio < 0.] *= 2.
             d_cur += dg_weight_1st_order * (discriminator_guidance / t_hat) 
             denoised -= dg_weight_1st_order * discriminator_guidance
-        current_denoised.append(denoised.detach().cpu().numpy())
 
         x_prime = x_hat + alpha * h * d_cur
         t_prime = t_hat + alpha * h
@@ -189,12 +177,8 @@ def ablation_sampler(
                 denoised -= dg_weight_2nd_order * discriminator_guidance
 
             x_next = x_hat + h * ((1 - 1 / (2 * alpha)) * d_cur + 1 / (2 * alpha) * d_prime)
-            current_denoised.append(denoised.detach().cpu().numpy())
-        
-        pred_x0_path.append(np.stack(current_denoised, axis=1))
 
-    return x_next, np.hstack(pred_x0_path)
-
+    return x_next
 
 # ----------------------------------------------------------------------------
 # Wrapper for torch.Generator that allows specifying a different random seed
@@ -268,7 +252,6 @@ def parse_int_list(s):
 @click.option('--dg_logit_max', 'dg_logit_max', help='Highest prediction accuracy to apply DG', metavar='FLOAT',    type=click.FloatRange(min=0), default=1.0, show_default=True)
 @click.option('--S_clip_min', 'S_clip_min', help='Minimum time[0,1] to apply DG', metavar='FLOAT',                  type=click.FloatRange(min=0), default=0., show_default=True)
 @click.option('--S_clip_max', 'S_clip_max', help='Maximum time[0,1] to apply DG', metavar='FLOAT',                  type=click.FloatRange(min=0), default='inf', show_default=True)
-# @click.option('--boosting',                help='If true, dg scale up low log ratio samples', metavar='INT',       type=click.IntRange(min=0), default=0, show_default=True)
 
 ## Discriminator checkpoint
 # @click.option('--pretrained_classifier_ckpt',help='Path of ADM classifier(latent extractor)',  metavar='STR',       type=str, default='/checkpoints/ADM_classifier/32x32_classifier.pt', show_default=True)
@@ -313,9 +296,6 @@ def main(network_pkl, discriminator_pkl, outdir, subdirs, seeds, class_idx, max_
     # Other ranks follow.
     if dist.get_rank() == 0:
         torch.distributed.barrier()
-    drop = []
-    pred_x0_npz = []
-    labels = []
 
     # Loop over batches.
     dist.print0(f'Generating {len(seeds)} images to "{outdir}"...')
@@ -339,22 +319,13 @@ def main(network_pkl, discriminator_pkl, outdir, subdirs, seeds, class_idx, max_
         sampler_kwargs = {key: value for key, value in sampler_kwargs.items() if value is not None}
         have_ablation_kwargs = any(x in sampler_kwargs for x in ['solver', 'discretization', 'schedule', 'scaling'])
         sampler_fn = ablation_sampler if have_ablation_kwargs else edm_sampler
-        images, pred_x0_path = sampler_fn(net, latents, class_labels, randn_like=rnd.randn_like,
+        images = sampler_fn(net, latents, class_labels, randn_like=rnd.randn_like,
                             discriminator=discriminator, **sampler_kwargs)
-        # resamples = resamples.bool()
-        
-        # images = images[~resamples]
-        # if len(drop) == 0:
-        #     dist.print0(images.shape)
-        # drop.append(resamples.sum().item()/len(resamples))
-        # batch_seeds = batch_seeds[~resamples.cpu()]
-        # class_labels = class_labels.argmax(dim=1)[~resamples]
         
         # Save images.
         images_np = (images * 127.5 + 128).clip(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
-    
-        pred_x0_path_np = np.clip((pred_x0_path / 2. + 0.5), 0, 1)
-        for seed, pred_x0, image_np, lab in zip(batch_seeds, pred_x0_path_np, images_np, class_labels.argmax(dim=1)):
+
+        for seed, image_np, lab in zip(batch_seeds, images_np, class_labels.argmax(dim=1)):
             image_dir = os.path.join(outdir, f'{seed-seed%1000:06d}') if subdirs else outdir
             os.makedirs(image_dir, exist_ok=True)
             image_path = os.path.join(image_dir, f'{seed:06d}_{lab.item()}.png')
@@ -362,24 +333,7 @@ def main(network_pkl, discriminator_pkl, outdir, subdirs, seeds, class_idx, max_
                 PIL.Image.fromarray(image_np[:, :, 0], 'L').save(image_path)
             else:
                 PIL.Image.fromarray(image_np, 'RGB').save(image_path)
-            # save_image(make_grid(torch.tensor(pred_x0), nrow=40), 
-            #            os.path.join(image_dir, f'{seed:06d}_{lab.item()}_x0.png'))
-            # np.savez(os.path.join(outdir, f'{seed:06d}_{lab.item()}_x0'), pred_x0)
-        
-        # image_dir = os.path.join(outdir, f'{seeds[0]-seeds[0]%1000:06d}') if subdirs else outdir
-        # os.makedirs(image_dir, exist_ok=True)
-        # image_grid = (images * 127.5 + 128).clip(0, 255).to(torch.uint8)
-        # image_grid = image_grid.reshape(int(np.sqrt(len(seeds))), int(np.sqrt(len(seeds))), *image_grid.shape[1:]).permute(0, 3, 1, 4, 2)
-        # image_grid = image_grid.reshape(int(np.sqrt(len(seeds))) * net.img_resolution, int(np.sqrt(len(seeds))) * net.img_resolution, net.img_channels)
-        # image_grid = image_grid.cpu().numpy()
-        # if image_grid.shape[2] == 1:
-        #     PIL.Image.fromarray(image_grid[:, :, 0], 'L').save(os.path.join(image_dir, f'grid-{class_idx}-{batch_seeds[0]:06d}-{batch_seeds[-1]:06d}.png'))
-        # else:
-        #     PIL.Image.fromarray(image_grid, 'RGB').save(os.path.join(image_dir, f'grid-{class_idx}-{batch_seeds[0]:06d}-{batch_seeds[-1]:06d}.png'))
 
-    # np.savez(os.path.join(outdir), np.concatenate(pred_x0_npz, axis=0), np.concatenate(labels, axis=0))
-    # dist.print0(f'Drop mean: {np.mean(drop)}, std: {np.std(drop)}')
-    # Done.
     torch.distributed.barrier()
     dist.print0('Done.')
 
