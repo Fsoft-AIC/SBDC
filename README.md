@@ -79,7 +79,7 @@ Using noise detection method, we obtain the real/fake label of each sample in th
 
 Noisy Label Detection: [Google Drive](https://drive.google.com/drive/folders/1WCrsHzNvDr7LF7h2WJV2lT1HzQvK6wnj?usp=sharing)
 
-Datasets are stored in various format (`pickle`,`npz`,`folder`): all images are saved in a numpy array, along with their label array. Custom datasets can be created from a folder containing images.
+Datasets are stored in various formats (`pickle`,`npz`,`folder`): all images are saved in a numpy array, along with their label array. Custom datasets can be created from a folder containing images.
 
 
 
